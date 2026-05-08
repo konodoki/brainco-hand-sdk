@@ -226,10 +226,10 @@ bool init_zqwl_device(DeviceContext* ctx, const char* port, uint32_t arb_baudrat
 #ifdef __linux__
 /**
  * @brief Initialize device via SocketCAN (using example's can_common.cpp implementation)
- * 
+ *
  * This uses the example's own SocketCAN implementation in can_common.cpp.
  * All backends compiled by default on Linux, select at runtime.
- * 
+ *
  * @param ctx Output: Device context to fill
  * @param iface CAN interface name (e.g., "can0")
  * @param slave_id Slave ID
@@ -246,6 +246,15 @@ bool init_socketcan_device(DeviceContext* ctx, const char* iface, uint8_t slave_
  * @return true if successful
  */
 bool init_zlg_device(DeviceContext* ctx, uint8_t slave_id, bool is_canfd);
+
+/**
+ * @brief Initialize device via BxiPci PCI CANFD adapter
+ * @param ctx Output: Device context to fill
+ * @param slave_id Slave ID
+ * @param is_canfd true for CANFD, false for CAN 2.0
+ * @return true if successful
+ */
+bool init_bxipci_device(DeviceContext* ctx, uint8_t slave_id, bool is_canfd);
 #endif
 
 /**

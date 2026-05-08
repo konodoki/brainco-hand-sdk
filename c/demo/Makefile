@@ -92,5 +92,7 @@ help:
 	@echo "  -S <iface> <id>                SocketCAN CANFD"
 	@echo "  -z <id>                        ZLG CAN 2.0"
 	@echo "  -Z <id>                        ZLG CANFD"
+	@echo "  -x <id>                        BxiPci CAN 2.0"
+	@echo "  -X <id>                        BxiPci CANFD"
 
 .PHONY: all clean help

@@ -696,6 +696,61 @@ bool init_zlg_device(DeviceContext* ctx, uint8_t slave_id, bool is_canfd) {
     ctx->touch_freq = is_canfd ? 50 : 20;
     return true;
 }
+
+bool init_bxipci_device(DeviceContext* ctx, uint8_t slave_id, bool is_canfd) {
+    printf("\n[Init] Mode: BxiPci %s\n", is_canfd ? "(CANFD)" : "(CAN 2.0)");
+    printf("  Slave ID: %d\n", slave_id);
+
+    // Force BxiPci backend
+    set_can_backend_bxipci();
+
+    bool success = is_canfd ? setup_canfd() : setup_can();
+    if (!success) {
+        printf("[ERROR] Failed to initialize BxiPci CAN device\n");
+        return false;
+    }
+
+    StarkProtocolType protocol = is_canfd ? STARK_PROTOCOL_TYPE_CAN_FD : STARK_PROTOCOL_TYPE_CAN;
+    uint32_t arb_baudrate = 1000000;   // 1 Mbps
+    uint32_t data_baudrate = is_canfd ? 5000000 : 1000000;
+
+    // Use hw_type override if set
+    if (ctx->hw_type_override != 0) {
+        printf("  Hardware type override: %s (%d)\n",
+               get_hardware_type_name_str(ctx->hw_type_override), ctx->hw_type_override);
+        ctx->handle = init_device_handler_can_with_hw_type(protocol, 1, slave_id, arb_baudrate, data_baudrate, ctx->hw_type_override);
+        ctx->hw_type = ctx->hw_type_override;
+    } else {
+        ctx->handle = init_device_handler_can(protocol, 1, arb_baudrate, data_baudrate);
+    }
+
+    if (ctx->handle == NULL) {
+        printf("[ERROR] Failed to create device handler\n");
+        cleanup_can_resources();
+        return false;
+    }
+
+    ctx->slave_id = slave_id;
+
+    // Get device info if no override
+    if (ctx->hw_type_override == 0) {
+        CDeviceInfo* info = stark_get_device_info(ctx->handle, slave_id);
+        if (info != NULL) {
+            ctx->hw_type = (StarkHardwareType)info->hardware_type;
+
+            if (info->serial_number) {
+                strncpy(ctx->serial_number, info->serial_number, sizeof(ctx->serial_number) - 1);
+                ctx->serial_number[sizeof(ctx->serial_number) - 1] = '\0';
+            }
+
+            free_device_info(info);
+        }
+    }
+
+    ctx->motor_freq = is_canfd ? 100 : 50;
+    ctx->touch_freq = is_canfd ? 50 : 20;
+    return true;
+}
 #endif // defined(__linux__) && !defined(STARK_NO_CAN)
 
 bool init_socketcan_device_builtin(DeviceContext* ctx, const char* iface, uint8_t slave_id, bool is_canfd) {
@@ -773,6 +828,8 @@ void print_init_usage(const char* prog_name) {
     printf("  -S <iface> <id>              SocketCAN CANFD (can_common)\n");
     printf("  -z <id>                      ZLG USB-CANFD CAN 2.0\n");
     printf("  -Z <id>                      ZLG USB-CANFD CANFD\n");
+    printf("  -x <id>                      BxiPci CAN 2.0\n");
+    printf("  -X <id>                      BxiPci CANFD\n");
 #endif
     printf("  -b <iface> <id>              SocketCAN CAN 2.0 (SDK built-in)\n");
     printf("  -B <iface> <id>              SocketCAN CANFD (SDK built-in)\n");
@@ -1027,6 +1084,28 @@ bool parse_args_and_init(DeviceContext* ctx, int argc, const char* argv[], int* 
                     return false;
                 }
                 if (!init_zlg_device(ctx, atoi(argv[2]), true)) {
+                    return false;
+                }
+                *arg_idx += 2;
+                break;
+
+            case 'x': // BxiPci CAN 2.0: -x <slave_id>
+                if (argc < 3) {
+                    printf("[ERROR] -x requires: <slave_id>\n");
+                    return false;
+                }
+                if (!init_bxipci_device(ctx, atoi(argv[2]), false)) {
+                    return false;
+                }
+                *arg_idx += 2;
+                break;
+
+            case 'X': // BxiPci CANFD: -X <slave_id>
+                if (argc < 3) {
+                    printf("[ERROR] -X requires: <slave_id>\n");
+                    return false;
+                }
+                if (!init_bxipci_device(ctx, atoi(argv[2]), true)) {
                     return false;
                 }
                 *arg_idx += 2;

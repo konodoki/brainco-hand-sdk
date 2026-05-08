@@ -89,10 +89,12 @@ endif
 #   - Environment: STARK_CAN_BACKEND=socketcan|zlg
 #
 # Compile options:
-#   - make                    # All backends (SocketCAN + ZLG on Linux)
+#   - make                    # All backends (SocketCAN + ZLG + BxiPci on Linux)
 #   - make STARK_NO_CAN=1     # Disable CAN support entirely
+#   - make STARK_NO_BXI=1     # Disable BxiPci backend
 #
 # Note: ZLG uses dynamic loading (dlopen), no compile-time dependency
+# Note: BxiPci requires libbxi_pci_drv.a, set BXI_PCI_LIB_DIR to override path
 #
 # ============================================================================
 
@@ -104,17 +106,34 @@ ifeq ($(STARK_NO_CAN),1)
 else
     # Compile with all available backends
     ifeq ($(OS),linux)
-        # Linux: SocketCAN + ZLG
-        CAN_CFLAGS := -DSTARK_USE_ZLG=1 -DSTARK_USE_SOCKETCAN=1
+        # Linux: SocketCAN + ZLG + BxiPci
+        CAN_CFLAGS := -DSTARK_USE_ZLG=1 -DSTARK_USE_SOCKETCAN=1 -DSTARK_USE_BXIPCI=1
     else ifeq ($(OS),win)
         # Windows: ZLG only
-        CAN_CFLAGS := -DSTARK_USE_ZLG=1 -DSTARK_USE_SOCKETCAN=0
+        CAN_CFLAGS := -DSTARK_USE_ZLG=1 -DSTARK_USE_SOCKETCAN=0 -DSTARK_USE_BXIPCI=0
     else
         # macOS: Neither (ZQWL only via SDK)
-        CAN_CFLAGS := -DSTARK_USE_ZLG=0 -DSTARK_USE_SOCKETCAN=0
+        CAN_CFLAGS := -DSTARK_USE_ZLG=0 -DSTARK_USE_SOCKETCAN=0 -DSTARK_USE_BXIPCI=0
     endif
-    CAN_LIBS :=
-    BASE_LIBS := -L$(LIB_DIR) $(RPATH_FLAG) -lbc_stark_sdk $(PLATFORM_LIBS)
+
+    # BxiPci PCI CANFD adapter library
+    ifeq ($(STARK_NO_BXI),1)
+        CAN_CFLAGS += -DSTARK_USE_BXIPCI=0
+        CAN_BXI_LIBS :=
+        CAN_BXI_INCLUDES :=
+    else ifeq ($(OS),linux)
+        BXI_PCI_LIB_DIR ?= $(abspath $(SCRIPT_DIR)/../../bxi_pci_drv/lib)
+        BXI_PCI_INC_DIR ?= $(abspath $(SCRIPT_DIR)/../../bxi_pci_drv/lib)
+        CAN_BXI_LIBS := -L$(BXI_PCI_LIB_DIR) -lbxi_pci_drv -lpthread
+        CAN_BXI_INCLUDES := -I$(BXI_PCI_INC_DIR)
+        INCLUDE += $(CAN_BXI_INCLUDES)
+    else
+        CAN_BXI_LIBS :=
+        CAN_BXI_INCLUDES :=
+    endif
+
+    CAN_LIBS := $(CAN_BXI_LIBS)
+    BASE_LIBS := -L$(LIB_DIR) $(RPATH_FLAG) -lbc_stark_sdk $(PLATFORM_LIBS) $(CAN_LIBS)
 endif
 
 CFLAGS += $(CAN_CFLAGS)

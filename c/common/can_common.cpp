@@ -1,13 +1,14 @@
 /**
  * @file can_common.cpp
  * @brief Implementation of common utility functions for CAN/CANFD examples
- * 
+ *
  * Supports multiple CAN backends with runtime selection:
  * - SocketCAN (Linux): Native kernel CAN interface
  * - ZLG: USB-CANFD adapter (dynamic loading, no compile-time dependency)
- * 
+ * - BxiPci: PCI CANFD adapter (callback-driven RX, queue-buffered)
+ *
  * Backend selection:
- * - Environment: STARK_CAN_BACKEND=socketcan|zlg
+ * - Environment: STARK_CAN_BACKEND=socketcan|zlg|bxipci
  * - Default: SocketCAN on Linux if available, otherwise ZLG
  */
 
@@ -37,6 +38,10 @@
 
 #ifndef STARK_USE_SOCKETCAN
   #define STARK_USE_SOCKETCAN 0
+#endif
+
+#ifndef STARK_USE_BXIPCI
+  #define STARK_USE_BXIPCI 0
 #endif
 
 // ZLG types and function pointers (for dynamic loading)
@@ -112,7 +117,7 @@ static bool load_zlg_library(void) {
 
 #undef LOAD_SYM
 
-  if (!pVCI_OpenDevice || !pVCI_CloseDevice || !pVCI_InitCAN || 
+  if (!pVCI_OpenDevice || !pVCI_CloseDevice || !pVCI_InitCAN ||
       !pVCI_StartCAN || !pVCI_Transmit || !pVCI_Receive) {
     printf("[ZLG] Failed to load required functions\n");
 #if PLATFORM_WINDOWS
@@ -128,6 +133,49 @@ static bool load_zlg_library(void) {
   return true;
 }
 #endif // STARK_USE_ZLG
+
+// BxiPci PCI CANFD backend
+#if STARK_USE_BXIPCI
+#include "bxi_pci_drv.h"
+#include <queue>
+#include <mutex>
+#include <condition_variable>
+#include <chrono>
+
+static bool g_bxipci_initialized = false;
+
+// Thread-safe queue for RX frames (driver callback pushes, SDK reads)
+struct BxiPciRxFrame {
+  uint32_t can_id;
+  uint8_t data[64];
+  uint8_t len;
+};
+
+static std::queue<BxiPciRxFrame> g_bxipci_rx_queue;
+static std::mutex g_bxipci_rx_mutex;
+static std::condition_variable g_bxipci_rx_cv;
+
+// BxiPci driver RX callback — called from driver thread, pushes frame into queue
+static int bxi_pci_rx_callback(void *arg, canfd_packet *msg) {
+  (void)arg;
+  if (!msg) return -1;
+
+  BxiPciRxFrame frame;
+  frame.can_id = msg->frame.can_id & CAN_EFF_MASK;
+  frame.len = (msg->frame.len > 64) ? 64 : static_cast<uint8_t>(msg->frame.len);
+  memcpy(frame.data, msg->frame.data, frame.len);
+
+  {
+    std::lock_guard<std::mutex> lock(g_bxipci_rx_mutex);
+    // Limit queue size to prevent unbounded growth
+    if (g_bxipci_rx_queue.size() < RX_BUFF_SIZE) {
+      g_bxipci_rx_queue.push(frame);
+    }
+  }
+  g_bxipci_rx_cv.notify_one();
+  return 0;
+}
+#endif // STARK_USE_BXIPCI
 
 // SocketCAN backend (Linux only)
 #if STARK_USE_SOCKETCAN
@@ -147,6 +195,7 @@ enum CanBackend {
   kBackendNone,
   kBackendZlg,
   kBackendSocketcan,
+  kBackendBxiPci,
 };
 
 static CanBackend g_selected_backend = kBackendNone;
@@ -175,6 +224,13 @@ static CanBackend get_can_backend(void) {
 #else
       printf("[WARN] ZLG not compiled in\n");
 #endif
+    } else if (strcasecmp(env, "bxipci") == 0) {
+#if STARK_USE_BXIPCI
+      g_selected_backend = kBackendBxiPci;
+      return g_selected_backend;
+#else
+      printf("[WARN] BxiPci not compiled in\n");
+#endif
     }
   }
 
@@ -198,6 +254,14 @@ void set_can_backend_zlg(void) {
   }
 #else
   printf("[ERROR] ZLG backend not compiled\n");
+#endif
+}
+
+void set_can_backend_bxipci(void) {
+#if STARK_USE_BXIPCI
+  g_selected_backend = kBackendBxiPci;
+#else
+  printf("[ERROR] BxiPci backend not compiled\n");
 #endif
 }
 
@@ -558,7 +622,17 @@ bool init_can_device(void) {
     return false;
 #endif
   }
-  
+
+  if (backend == kBackendBxiPci) {
+#if STARK_USE_BXIPCI
+    // BxiPci init is done lazily in start_can_channel/start_canfd_channel
+    return true;
+#else
+    printf("[ERROR] BxiPci not compiled\n");
+    return false;
+#endif
+  }
+
   printf("[ERROR] No CAN backend available\n");
   return false;
 }
@@ -589,6 +663,25 @@ bool start_can_channel(void) {
   if (get_can_backend() == kBackendSocketcan) {
     return true;  // SocketCAN doesn't need channel setup
   }
+
+  if (get_can_backend() == kBackendBxiPci) {
+#if STARK_USE_BXIPCI
+    if (g_bxipci_initialized) return true;
+
+    int ret = bxi_pci_init(bxi_pci_rx_callback, nullptr, -1);
+    if (ret == -1) {
+      printf("[ERROR] Failed to initialize BxiPci driver\n");
+      return false;
+    }
+    g_bxipci_initialized = true;
+    printf("[BxiPci] Driver initialized successfully\n");
+    return true;
+#else
+    printf("[ERROR] BxiPci not compiled\n");
+    return false;
+#endif
+  }
+
 #if STARK_USE_ZLG
   if (!pVCI_InitCAN || !pVCI_StartCAN) {
     printf("[ERROR] ZLG library not loaded\n");
@@ -642,6 +735,138 @@ bool start_canfd_channel(void) {
 /****************************************************************************/
 
 void setup_can_callbacks(void) {
+  if (get_can_backend() == kBackendBxiPci) {
+#if STARK_USE_BXIPCI
+    // BxiPci TX: call canfd_send_packet directly
+    set_can_tx_callback([](uint8_t slave_id,
+                           uint32_t can_id,
+                           const uint8_t *data,
+                           uintptr_t data_len) -> int {
+      (void)slave_id;
+      canfd_packet packet;
+      memset(&packet, 0, sizeof(packet));
+      packet.bus = BXI_PCI_BUS_INDEX;
+      packet.frame.can_id = can_id | CAN_EFF_FLAG;
+      packet.frame.len = (data_len > 64) ? 64 : static_cast<uint8_t>(data_len);
+      memcpy(packet.frame.data, data, packet.frame.len);
+      int ret = canfd_send_packet(&packet, 1);
+      return (ret > 0) ? 0 : -1;
+    });
+
+    // BxiPci RX: read from the callback-driven queue
+    set_can_rx_callback([](uint8_t slave_id,
+                           uint32_t expected_can_id,
+                           uint8_t expected_frames,
+                           uint32_t *can_id_out,
+                           uint8_t *data_out,
+                           uintptr_t *data_len_out) -> int {
+      (void)slave_id;
+      int total_dlc = 0;
+      int received_count = 0;
+
+      // Check if this is DFU mode
+      bool is_dfu_mode = (expected_can_id == 0);
+
+      // Extract command from CAN ID to detect multi-frame commands
+      uint8_t cmd = (expected_can_id >> 3) & 0x0F;
+      bool is_multi_frame_cmd = (cmd == 0x0B || cmd == 0x0D);
+
+      // Retry strategy
+      int max_attempts = is_dfu_mode ? 200 : (expected_frames > 1 || is_multi_frame_cmd ? 5 : 2);
+
+      for (int attempt = 0; attempt < max_attempts; attempt++) {
+        BxiPciRxFrame frame;
+        bool got_frame = false;
+
+        {
+          std::unique_lock<std::mutex> lock(g_bxipci_rx_mutex);
+          if (g_bxipci_rx_cv.wait_for(lock, std::chrono::milliseconds(RX_WAIT_TIME),
+                                      []{ return !g_bxipci_rx_queue.empty(); })) {
+            frame = g_bxipci_rx_queue.front();
+            g_bxipci_rx_queue.pop();
+            got_frame = true;
+          }
+        }
+
+        if (!got_frame) {
+          continue;
+        }
+
+        uint32_t can_id = frame.can_id;
+        int can_dlc = frame.len;
+
+        // Skip non-matching frames (unless DFU mode)
+        if (!is_dfu_mode && expected_can_id != 0 && can_id != expected_can_id) {
+          continue;
+        }
+
+        // Check for multi-frame protocol format
+        if (is_multi_frame_cmd && can_dlc > 0) {
+          uint8_t frame_header = frame.data[0];
+
+          if (cmd == 0x0B) {
+            // MultiRead format: [addr, len|flag, data...]
+            if (can_dlc >= 2) {
+              uint8_t len_and_flag = frame.data[1];
+              bool is_last = (len_and_flag & 0x80) != 0;
+
+              for (int j = 0; j < can_dlc; j++) {
+                data_out[total_dlc++] = frame.data[j];
+              }
+              received_count++;
+
+              if (is_last) {
+                *can_id_out = can_id;
+                *data_len_out = total_dlc;
+                return 0;
+              }
+              continue;
+            }
+          } else if (cmd == 0x0D) {
+            // TouchSensorRead format: [total:4bit|seq:4bit, data...]
+            uint8_t total = (frame_header >> 4) & 0x0F;
+            uint8_t seq = frame_header & 0x0F;
+
+            if (total > 0 && seq > 0) {
+              for (int j = 0; j < can_dlc; j++) {
+                data_out[total_dlc++] = frame.data[j];
+              }
+              received_count++;
+
+              if (received_count >= total) {
+                *can_id_out = can_id;
+                *data_len_out = total_dlc;
+                return 0;
+              }
+              continue;
+            }
+          }
+        }
+
+        // Standard single-frame data - return immediately
+        for (int j = 0; j < can_dlc; j++) {
+          data_out[total_dlc++] = frame.data[j];
+        }
+        *can_id_out = can_id;
+        *data_len_out = total_dlc;
+        return 0;
+      }
+
+      // Timeout
+      if (total_dlc > 0) {
+        *can_id_out = expected_can_id;
+        *data_len_out = total_dlc;
+        return 0;
+      }
+
+      return -1;
+    });
+#else
+    printf("[ERROR] BxiPci not compiled\n");
+#endif
+    return;
+  }
+
   if (get_can_backend() == kBackendSocketcan) {
 #if STARK_USE_SOCKETCAN
     set_can_tx_callback([](uint8_t slave_id,
@@ -831,6 +1056,80 @@ void setup_can_callbacks(void) {
 /****************************************************************************/
 
 void setup_canfd_callbacks(void) {
+  if (get_can_backend() == kBackendBxiPci) {
+#if STARK_USE_BXIPCI
+    // BxiPci CANFD TX
+    set_can_tx_callback([](uint8_t slave_id,
+                           uint32_t canfd_id,
+                           const uint8_t *data,
+                           uintptr_t data_len) -> int {
+      (void)slave_id;
+      canfd_packet packet;
+      memset(&packet, 0, sizeof(packet));
+      packet.bus = BXI_PCI_BUS_INDEX;
+      packet.frame.can_id = canfd_id | CAN_EFF_FLAG;
+      packet.frame.len = (data_len > 64) ? 64 : static_cast<uint8_t>(data_len);
+      packet.frame.flags = CANFD_BRS | CANFD_FDF;
+      memcpy(packet.frame.data, data, packet.frame.len);
+      int ret = canfd_send_packet(&packet, 1);
+      return (ret > 0) ? 0 : -1;
+    });
+
+    // BxiPci CANFD RX: read from the callback-driven queue, match by slave_id + master_id
+    set_can_rx_callback([](uint8_t slave_id,
+                           uint32_t expected_can_id,
+                           uint8_t expected_frames,
+                           uint32_t *canfd_id_out,
+                           uint8_t *data_out,
+                           uintptr_t *data_len_out) -> int {
+      (void)slave_id;
+      (void)expected_frames;
+
+      // CANFD CAN ID format: (slave_id << 16) | (master_id << 8) | payload_len
+      uint8_t expected_slave_id = (expected_can_id >> 16) & 0xFF;
+      uint8_t expected_master_id = (expected_can_id >> 8) & 0xFF;
+
+      int max_attempts = 2;
+
+      for (int attempt = 0; attempt < max_attempts; attempt++) {
+        BxiPciRxFrame frame;
+        bool got_frame = false;
+
+        {
+          std::unique_lock<std::mutex> lock(g_bxipci_rx_mutex);
+          if (g_bxipci_rx_cv.wait_for(lock, std::chrono::milliseconds(RX_WAIT_TIME),
+                                      []{ return !g_bxipci_rx_queue.empty(); })) {
+            frame = g_bxipci_rx_queue.front();
+            g_bxipci_rx_queue.pop();
+            got_frame = true;
+          }
+        }
+
+        if (!got_frame) {
+          continue;
+        }
+
+        // Match slave_id and master_id from CAN ID
+        uint8_t resp_slave_id = (frame.can_id >> 16) & 0xFF;
+        uint8_t resp_master_id = (frame.can_id >> 8) & 0xFF;
+
+        if (resp_slave_id == expected_slave_id && resp_master_id == expected_master_id) {
+          *canfd_id_out = frame.can_id;
+          *data_len_out = frame.len;
+          memcpy(data_out, frame.data, frame.len);
+          return 0;
+        }
+        // Non-matching frame discarded, try again
+      }
+
+      return -1;
+    });
+#else
+    printf("[ERROR] BxiPci not compiled\n");
+#endif
+    return;
+  }
+
   if (get_can_backend() == kBackendSocketcan) {
 #if STARK_USE_SOCKETCAN
     set_can_tx_callback([](uint8_t slave_id,
@@ -1030,6 +1329,24 @@ void cleanup_can_resources(void) {
       pVCI_CloseDevice(ZCANFD_TYPE_USBCANFD, ZCANFD_CARD_INDEX);
     }
     printf("[ZLG] Resources cleaned up\n");
+#endif
+    return;
+  }
+
+  if (backend == kBackendBxiPci) {
+#if STARK_USE_BXIPCI
+    if (g_bxipci_initialized) {
+      bxi_pci_exit();
+      g_bxipci_initialized = false;
+    }
+    // Clear any remaining frames in the queue
+    {
+      std::lock_guard<std::mutex> lock(g_bxipci_rx_mutex);
+      while (!g_bxipci_rx_queue.empty()) {
+        g_bxipci_rx_queue.pop();
+      }
+    }
+    printf("[BxiPci] Resources cleaned up\n");
 #endif
   }
 }

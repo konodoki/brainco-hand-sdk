@@ -23,11 +23,17 @@
  *    - Requires: libusbcanfd.so/.dll at runtime
  *    - Platforms: Linux, Windows
  *
- * 3. ZQWL (SDK built-in, cross-platform):
+ * 3. BxiPci PCI CANFD adapter:
+ *    - CLI options: -x (CAN 2.0), -X (CANFD)
+ *    - Environment: STARK_CAN_BACKEND=bxipci
+ *    - Requires: libbxi_pci_drv.a at compile time
+ *    - Platforms: Linux
+ *
+ * 4. ZQWL (SDK built-in, cross-platform):
  *    - CLI options: -c (CAN 2.0), -f (CANFD)
  *    - No external dependencies
  *
- * 4. Disable CAN support:
+ * 5. Disable CAN support:
  *    - Compile: make STARK_NO_CAN=1
  *
  * ============================================================================
@@ -64,6 +70,7 @@ extern "C" {
 #define ZCANFD_TYPE_USBCANFD 41 // ZLG USB-CANFD device type
 #define ZCANFD_CARD_INDEX 0     // Card index
 #define ZCANFD_CHANNEL_INDEX 0  // Channel index
+#define BXI_PCI_BUS_INDEX 0     // BxiPci bus index
 #define RX_WAIT_TIME 100        // Receive wait time (ms)
 #define RX_BUFF_SIZE 1000       // Receive buffer size
 
@@ -138,6 +145,12 @@ void cleanup_can_resources(void);
  * Call before setup_can/setup_canfd to use ZLG adapter
  */
 void set_can_backend_zlg(void);
+
+/**
+ * @brief Select BxiPci backend explicitly
+ * Call before setup_can/setup_canfd to use BxiPci PCI CANFD adapter
+ */
+void set_can_backend_bxipci(void);
 
 /**
  * @brief Select SocketCAN backend explicitly
