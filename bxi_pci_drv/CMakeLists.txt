@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 2.8)
 project(bxi_pci_drv_test)
-
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 add_compile_options(-Wall -fdiagnostics-color=auto -fPIC -Wno-unused-function)
 
 include_directories(./src ./lib)

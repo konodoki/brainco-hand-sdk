@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(make -C demo clean)",
+      "Bash(make -C demo hand_demo.exe)",
+      "Bash(make -C demo all)"
+    ]
+  }
+}

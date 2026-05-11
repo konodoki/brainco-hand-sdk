@@ -742,12 +742,19 @@ void setup_can_callbacks(void) {
                            uint32_t can_id,
                            const uint8_t *data,
                            uintptr_t data_len) -> int {
+      // 打印发送信息
+      printf("[CANFD_TX] Slave:%d ID:0x%08X Len:%zu Data:", 
+            slave_id, can_id, data_len);
+      for (uintptr_t i = 0; i < data_len && i < 64; i++) {
+          printf("%02X ", data[i]);
+      }
+      printf("\n");
       (void)slave_id;
       canfd_packet packet;
       memset(&packet, 0, sizeof(packet));
       packet.bus = BXI_PCI_BUS_INDEX;
-      packet.frame.can_id = can_id | CAN_EFF_FLAG;
-      packet.frame.len = (data_len > 64) ? 64 : static_cast<uint8_t>(data_len);
+      packet.frame.can_id = can_id;
+      packet.frame.len = (data_len > 8) ? 8 : static_cast<uint8_t>(data_len);
       memcpy(packet.frame.data, data, packet.frame.len);
       int ret = canfd_send_packet(&packet, 1);
       return (ret > 0) ? 0 : -1;
@@ -1063,11 +1070,18 @@ void setup_canfd_callbacks(void) {
                            uint32_t canfd_id,
                            const uint8_t *data,
                            uintptr_t data_len) -> int {
+      // 打印发送信息
+      printf("[CANFD_TX] Slave:%d ID:0x%08X Len:%zu Data:", 
+            slave_id, canfd_id, data_len);
+      for (uintptr_t i = 0; i < data_len && i < 64; i++) {
+          printf("%02X ", data[i]);
+      }
+      printf("\n");
       (void)slave_id;
       canfd_packet packet;
       memset(&packet, 0, sizeof(packet));
       packet.bus = BXI_PCI_BUS_INDEX;
-      packet.frame.can_id = canfd_id | CAN_EFF_FLAG;
+      packet.frame.can_id = (canfd_id & CAN_EFF_MASK) | CAN_EFF_FLAG;
       packet.frame.len = (data_len > 64) ? 64 : static_cast<uint8_t>(data_len);
       packet.frame.flags = CANFD_BRS | CANFD_FDF;
       memcpy(packet.frame.data, data, packet.frame.len);

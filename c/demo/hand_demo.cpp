@@ -955,7 +955,7 @@ void print_usage(const char *prog_name) {
     printf("Usage: %s [options] [demo_id]\n\n", prog_name);
     print_init_usage(prog_name);
     printf("\nDemo-specific options:\n");
-    printf("  -x <protocol> <id>           Custom callback mode (protocol: modbus/can/canfd)\n");
+    printf("  -c <protocol> <id>           Custom callback mode (protocol: modbus/can/canfd)\n");
     printf("Demo IDs:\n");
     printf("    1 - Basic position control\n");
     printf("    2 - Speed & current control\n");
@@ -993,7 +993,7 @@ int main(int argc, char const *argv[]) {
         check_idx = 3;  // Skip -t <type>
     }
 
-    if (check_idx < argc && argv[check_idx][0] == '-' && argv[check_idx][1] == 'x') {
+    if (check_idx < argc && argv[check_idx][0] == '-' && argv[check_idx][1] == 'c') {
         // Handle -t prefix manually if present
         if (check_idx == 3) {
             int hw_type_val = atoi(argv[2]);
@@ -1011,7 +1011,7 @@ int main(int argc, char const *argv[]) {
         const char** x_argv = (const char**)argv + check_idx;
 
         if (x_argc < 3) {
-            printf("[ERROR] -x requires: <protocol> <slave_id>\n");
+            printf("[ERROR] -c requires: <protocol> <slave_id>\n");
             print_usage(argv[0]);
             return -1;
         }

@@ -20,70 +20,22 @@ int main(){
         return -1;
     }
 
-    //RGB test
-    led_rgb_set(LED_R);
-    printf("led red on\n");
-    sleep(1);
-    led_rgb_set(LED_G);
-    printf("led green on\n");
-    sleep(1);
-    led_rgb_set(LED_B);
-    printf("led blue on\n");
-    sleep(1);
-    led_rgb_set(LED_R|LED_G|LED_B);
-    printf("led rgb on\n");
-    sleep(1);
-    led_rgb_set(0);
-    printf("led off\n");
-    sleep(1);
-    
-    //FAN test
-    fan_pwr_set(1);
-    printf("fan power on\n");
-    sleep(1);
-    fan_pwr_set(0);
-    printf("fan power off\n");
-    sleep(1);
-
-    //motor test
-    motor_pwr_set(1);
-    printf("motor power on\n");
-    sleep(1); //wait for soft start
-
-    //remote emergency stop test
-    for (size_t i = 10; i > 0; i--)
-    {
-        printf("Please press the remote emergency stop, wait %ld s.\n", i);
-        if (0 == motor_pwr_get())
-        {
-            printf("successful\n");
-            break;
+    struct canfd_frame frame={
+        .can_id=(0x03E00108& CAN_EFF_MASK) | CAN_EFF_FLAG,
+        .flags=CANFD_BRS,
+        .len=8,
+        .data={
+            0x01,0x04,0x0B,0xB8,0x00,0x0A,0x9E,0x75
         }
+    };
+    canfd_packet msg={
+        .bus=0,
+        .frame=frame
+    };
+    canfd_send_packet(&msg, 1);
+    for (int i=0; i<3; i++) {
         sleep(1);
     }
-    
-    motor_pwr_set(0);
-    printf("motor power off\n");
-
-    //connect can0 to canXX
-    //can test
-    for (size_t i = 0; i < 1000; i++)
-    {
-        #define MSG_NUM 5
-        canfd_packet msg[MSG_NUM];
-        for (size_t i = 0; i < MSG_NUM; i++){
-            msg[i].bus = 0;
-            msg[i].frame.can_id = i;
-            msg[i].frame.len = 8;
-            msg[i].frame.flags = CANFD_BRS|CANFD_FDF; //CANFD with BRS(1M+5M)
-            for (size_t j = 0; j < 8; j++){
-                msg[i].frame.data[j] = j;
-            }
-        }
-        canfd_send_packet(msg, MSG_NUM);
-        sleep(1);
-    }
-    
     bxi_pci_exit();
 
     return 0;
